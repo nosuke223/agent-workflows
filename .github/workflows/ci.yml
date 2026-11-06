@@ -1,0 +1,25 @@
+# このリポジトリのテスト（自動マージの判定の手順）と lint を、PR と main で動かす。
+name: テスト
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - name: テスト
+        run: python3 -m unittest discover -s tests -v
+      - name: lint
+        run: uvx ruff check .
+      - name: format
+        run: uvx ruff format --check .

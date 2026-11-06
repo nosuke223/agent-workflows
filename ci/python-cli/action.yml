@@ -1,0 +1,19 @@
+# 型 python-cli（Python と uv）のテスト。呼び出し側のジョブの名前は test にする（自動マージがこの名前を見る）。
+name: テスト（python-cli）
+description: Python と uv のプロジェクトのテスト、lint、format の確認
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@v6
+    - name: テスト
+      shell: bash
+      run: uv run pytest
+    - name: lint
+      shell: bash
+      run: uv run ruff check .
+    - name: format
+      shell: bash
+      run: uv run ruff format --check .
