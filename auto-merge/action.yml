@@ -1,0 +1,29 @@
+# エージェントの PR が自動マージの条件を満たしているかを判定し、満たせば承認してマージする。
+# 条件と方式は agent-env の docs/decisions.md「自動マージの方式」と docs/review-and-merge.md「自動マージ」。
+# 呼び出し側（各プロジェクトの .github/workflows/auto-merge.yml）が、きっかけと権限を決める。
+# このアクションは呼び出し側のリポジトリのコードを動かさない（判定の手順は、このフォルダの auto_merge.py）。
+name: 自動マージの判定
+description: エージェントの PR が自動マージの条件を満たしているかを判定し、満たせば承認してマージする
+inputs:
+  mode:
+    description: off（何もしない）/ dry-run（判定をコメントするだけ。空も同じ）/ on（承認してマージする）
+    required: false
+    default: ""
+  agent-account:
+    description: エージェントの GitHub アカウント
+    required: false
+    default: nosuke223-agent
+  github-token:
+    description: GitHub Actions のトークン（呼び出し側の github.token）
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: 判定する
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        AGENT_ACCOUNT: ${{ inputs.agent-account }}
+        AUTO_MERGE: ${{ inputs.mode }}
+      run: python3 "$GITHUB_ACTION_PATH/auto_merge.py"

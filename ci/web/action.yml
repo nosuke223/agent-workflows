@@ -1,0 +1,39 @@
+# 型 web（Node.js と npm）のテスト。呼び出し側のジョブの名前は test にする（自動マージがこの名前を見る）。
+# package.json の scripts の lint、test、build（必須。ないと失敗する）と、Playwright の設定（playwright.config.*）が
+# あれば e2e を動かす。package.json がまだない（土台を作る前の）ときは、どの手順も飛ばす。
+# 失敗したときの Playwright の記録は、呼び出し側で残す（このアクションの後に actions/upload-artifact を置く）。
+name: テスト（web）
+description: Node.js と npm のプロジェクトの lint、テスト、ビルド、画面を操作するテスト
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: actions/setup-node@v4
+      with:
+        node-version: lts/*
+    - name: 依存を入れる
+      if: hashFiles('package.json') != ''
+      shell: bash
+      run: npm ci
+    - name: lint
+      if: hashFiles('package.json') != ''
+      shell: bash
+      run: npm run lint
+    - name: テスト
+      if: hashFiles('package.json') != ''
+      shell: bash
+      run: npm run test
+    - name: ビルド
+      if: hashFiles('package.json') != ''
+      shell: bash
+      run: npm run build
+    - name: 画面を操作するテストのブラウザを入れる
+      if: hashFiles('playwright.config.*') != ''
+      shell: bash
+      run: npx playwright install --with-deps chromium
+    - name: 画面を操作するテスト
+      if: hashFiles('playwright.config.*') != ''
+      shell: bash
+      run: npm run e2e
