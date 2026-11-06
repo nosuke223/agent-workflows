@@ -485,6 +485,29 @@ class GraphqlTest(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("number=7") - 1], "-F")
 
 
+class RecentlyClosedTest(unittest.TestCase):
+    NOW = m.dt.datetime(2026, 11, 20, tzinfo=m.dt.timezone.utc)
+
+    def test_reads_pages_until_older_than_retry_days(self):
+        def pr(n, updated):
+            return {"number": n, "updated_at": updated}
+
+        page1 = [pr(i, "2026-11-19T00:00:00Z") for i in range(50)]
+        page2 = [pr(100, "2026-11-10T00:00:00Z"), pr(101, "2026-11-01T00:00:00Z")]
+        pages = {1: page1, 2: page2, 3: []}
+        calls = []
+
+        def api(path, paginate=False):
+            calls.append(path)
+            return pages[int(path.rsplit("page=", 1)[1])]
+
+        with mock.patch.object(m, "gh_api", side_effect=api):
+            prs = m.recently_closed_prs("o/r", self.NOW)
+        # 2ページ目の、14日より前のもの（11/01）で止まる
+        self.assertEqual([p["number"] for p in prs], list(range(50)) + [100])
+        self.assertEqual(len(calls), 2)
+
+
 class ClosingNumbersTest(unittest.TestCase):
     def ref(self, number, repo):
         return {"number": number, "repository": {"nameWithOwner": repo}}
@@ -551,6 +574,7 @@ class AfterMergeTest(unittest.TestCase):
             {
                 "number": 7,
                 "merged_at": merged_at,
+                "updated_at": "2999-01-01T00:00:00Z",
                 "user": {"login": user},
                 "head": {"ref": "issue-3-x", "sha": HEAD, "repo": {"full_name": "o/r"}},
                 "base": {"ref": "main"},
@@ -559,7 +583,7 @@ class AfterMergeTest(unittest.TestCase):
 
         def api(path, paginate=False):
             if path.startswith("repos/o/r/pulls?state=closed"):
-                return closed
+                return closed if path.endswith("page=1") else []
             if path == "repos/o/r/issues/7/comments":
                 return list(comments)
             if path == "repos/o/r/pulls/7":

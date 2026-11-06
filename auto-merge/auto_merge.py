@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import os
@@ -488,6 +489,28 @@ def reopened_after(events: list, when: str) -> bool:
     return any(e.get("event") == "reopened" and (e.get("created_at") or "") > when for e in events)
 
 
+RETRY_DAYS = 14  # 後片付けをやり直す対象: この日数のうちに更新された、閉じた PR
+
+
+def recently_closed_prs(repo: str, now: dt.datetime) -> list:
+    """RETRY_DAYS 日のうちに更新された、閉じた PR（新しい順）。ページをまたいで読む。
+
+    件数で区切ると、ほかの PR がたくさん閉じたときに、後片付けが残った PR を見落とすため、
+    日数で区切る。
+    """
+    cutoff = (now - dt.timedelta(days=RETRY_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    prs, page = [], 1
+    while True:
+        batch = gh_api(
+            f"repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=50&page={page}"
+        )
+        recent = [pr for pr in batch if (pr.get("updated_at") or "") >= cutoff]
+        prs += recent
+        if len(recent) < len(batch) or len(batch) < 50:
+            return prs
+        page += 1
+
+
 def retry_unfinished(repo: str, agent: str, default_branch: str) -> None:
     """GitHub Actions がマージしたのに、後片付けが済んだ記録のない PR の後片付けをやり直す。
 
@@ -495,7 +518,7 @@ def retry_unfinished(repo: str, agent: str, default_branch: str) -> None:
     判定の流れでは二度と見ない。最近閉じた PR から探す。マージの後に Issue が開き直されていたら、
     所有者の判断なので触らない。
     """
-    recent = gh_api(f"repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=20")
+    recent = recently_closed_prs(repo, dt.datetime.now(dt.timezone.utc))
     for pr in recent:
         if not pr.get("merged_at") or pr["user"]["login"] != agent:
             continue
