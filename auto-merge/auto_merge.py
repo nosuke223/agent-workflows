@@ -68,7 +68,9 @@ def gh_api(path: str, paginate: bool = False):
 def gh_graphql(query: str, **variables) -> dict:
     cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
-        cmd += ["-F", f"{key}={value}"]
+        # 文字は -f（そのまま文字）、整数だけ -F（-F は "2048" や "true" を数や真偽に変える）
+        flag = "-F" if isinstance(value, int) and not isinstance(value, bool) else "-f"
+        cmd += [flag, f"{key}={value}"]
     out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
     return json.loads(out)["data"]
 
@@ -433,6 +435,11 @@ def main() -> int:
                 error = (e.stderr or "").strip() or f"終了コード {e.returncode}"
                 print(f"PR #{pr['number']}: マージに失敗しました: {error}")
                 comment(repo, pr["number"], comment_body("error", [error], sha, mode))
+                continue
+            if not gh_api(f"repos/{repo}/pulls/{pr['number']}").get("merged"):
+                # マージキューなどで、マージのコマンドが成功してもまだマージされていない。
+                # 後片付けは、マージされた後の回の retry_unfinished が行う
+                print(f"PR #{pr['number']}: まだマージされていないので、後片付けは後の回で行う")
                 continue
             head_repo = (pr["head"].get("repo") or {}).get("full_name")
             finish_merged(repo, pr["number"], number, pr["head"]["ref"], sha, mode, head_repo)

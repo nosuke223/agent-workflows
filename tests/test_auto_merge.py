@@ -309,7 +309,9 @@ class MainTest(unittest.TestCase):
         "base": {"ref": "main"},
     }
 
-    def run_main(self, mode, verdict=("ok", []), comments=(), merge_error=None, pr=None):
+    def run_main(
+        self, mode, verdict=("ok", []), comments=(), merge_error=None, pr=None, merged=True
+    ):
         calls = []
 
         def gh(*args):
@@ -324,7 +326,9 @@ class MainTest(unittest.TestCase):
                 m,
                 "gh_api",
                 side_effect=lambda path, paginate=False: (
-                    [pr or self.PR]
+                    {"merged": merged}
+                    if path == "repos/o/r/pulls/7"
+                    else [pr or self.PR]
                     if path.startswith("repos/o/r/pulls")
                     else {"default_branch": "main"}
                     if path == "repos/o/r"
@@ -356,6 +360,11 @@ class MainTest(unittest.TestCase):
             retry.assert_not_called()
             self.run_main("on")
             retry.assert_called_once_with("o/r", "agent", "main")
+
+    def test_cleanup_waits_until_actually_merged(self):
+        # マージキューでは、マージのコマンドが成功しても、まだマージされていない
+        calls = self.run_main("on", merged=False)
+        self.assertEqual([c[:2] for c in calls], [("pr", "review"), ("pr", "merge")])
 
     def test_pr_to_another_branch_is_skipped(self):
         other = dict(self.PR, base={"ref": "feature/x"})
@@ -463,6 +472,17 @@ class MainTest(unittest.TestCase):
     def test_unknown_mode_is_dry_run(self):
         calls = self.run_main("yes")
         self.assertIn("mode=dry-run", calls[0][-1])
+
+
+class GraphqlTest(unittest.TestCase):
+    def test_strings_stay_strings(self):
+        done = subprocess.CompletedProcess([], 0, json.dumps({"data": {}}), "")
+        with mock.patch("subprocess.run", return_value=done) as run:
+            m.gh_graphql("q", owner="o", name="2048", number=7)
+        cmd = run.call_args[0][0]
+        self.assertEqual(cmd[cmd.index("name=2048") - 1], "-f")
+        self.assertEqual(cmd[cmd.index("owner=o") - 1], "-f")
+        self.assertEqual(cmd[cmd.index("number=7") - 1], "-F")
 
 
 class ClosingNumbersTest(unittest.TestCase):
