@@ -28,6 +28,9 @@ CODEX_BOT = "chatgpt-codex-connector[bot]"
 ACTIONS_BOT = "github-actions[bot]"
 CODEX_STATE_RE = re.compile(r"<!-- codex-review-state:v1 (\{.*?\}) -->", re.DOTALL)
 AUTO_LABEL = "merge:auto"
+# AUTO_MERGE=all のとき、これが付いた Issue の PR は自動マージしない（人が見る）
+MANUAL_LABEL = "merge:manual"
+READY_LABEL = "agent:ready"
 TEST_CHECK = "test"
 # 判定のコメントの印。result は判定の結果と理由の要約で、変わったときだけコメントし直す。
 # verdict（ok / ng / error）と mode（dry-run / on）は、ランナーが通知を決めるのに読む
@@ -108,6 +111,52 @@ def label_added_by(events: list, label: str) -> str | None:
         if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == label:
             actor = (e.get("actor") or {}).get("login")
     return actor
+
+
+# 「判断してほしいこと」への答えだけのコメント（例: 「1:A, 2:B」「おすすめで」）。
+# 選択肢は本文にあり、
+# Codex も本文で読めるので、自動マージの対象から外す理由にしない
+ANSWER_RE = re.compile(
+    r"^\s*(おすすめで(お願いします)?|(\d+\s*[:：]\s*[A-Za-z]\s*[,、，]?\s*)+)[。.]?\s*$"
+)
+
+
+def counts_as_spec(body: str) -> bool:
+    """所有者の Issue へのコメントのうち、仕様を足しうるもの（答えだけのものは除く）。"""
+    return not ANSWER_RE.match(body or "")
+
+
+def in_scope(labels: set, scope_all: bool) -> bool:
+    """自動マージの対象か。
+
+    all なら merge:manual のないものすべて、そうでなければ merge:auto のもの。
+    """
+    if MANUAL_LABEL in labels:
+        return False
+    return scope_all or AUTO_LABEL in labels
+
+
+def owner_approval(issue: dict, events: list, owner: str, scope_all: bool) -> str | None:
+    """所有者が自動マージを認めていなければ、その理由。認めていれば None。
+
+    all でないときは、所有者が merge:auto を付けたことだけを見る。all のときは、Issue を書いたのが
+    所有者か、所有者が agent:ready を付けた（リードの下書きを承認した）ことでもよい。
+    """
+    actor = label_added_by(events, AUTO_LABEL)
+    if actor == owner:
+        return None
+    if not scope_all:
+        return f"`{AUTO_LABEL}` を付けたのが所有者ではない（{actor}）"
+    if (issue.get("user") or {}).get("login") == owner:
+        return None
+    if any(
+        e.get("event") == "labeled"
+        and (e.get("label") or {}).get("name") == READY_LABEL
+        and (e.get("actor") or {}).get("login") == owner
+        for e in events
+    ):
+        return None
+    return f"所有者が書いた Issue でも、所有者が `{READY_LABEL}` を付けた Issue でもない"
 
 
 def codex_state(comments: list) -> dict | None:
@@ -217,8 +266,8 @@ def judge(facts: dict) -> tuple[str, list[str]]:
     if facts["codex"] is not True or facts["test"] is None or facts["mergeable"] is None:
         return "wait", []
     reasons = []
-    if facts["label_actor"] != facts["owner"]:
-        reasons.append(f"`{AUTO_LABEL}` を付けたのが所有者ではない（{facts['label_actor']}）")
+    if facts["unapproved"]:
+        reasons.append(facts["unapproved"])
     if facts["owner_comments"]:
         reasons.append(
             f"Issue に所有者のコメントが {facts['owner_comments']} 件ある"
@@ -270,7 +319,9 @@ query($owner: String!, $name: String!, $number: Int!) {
 """
 
 
-def collect(repo: str, owner: str, pr: dict) -> tuple[int | None, dict | None]:
+def collect(
+    repo: str, owner: str, pr: dict, scope_all: bool = False
+) -> tuple[int | None, dict | None]:
     """PR の Issue 番号と、判定に使う事実。対象外なら (None, None)。"""
     name = repo.split("/", 1)[1]
     data = gh_graphql(CLOSING_QUERY, owner=owner, name=name, number=pr["number"])
@@ -279,7 +330,7 @@ def collect(repo: str, owner: str, pr: dict) -> tuple[int | None, dict | None]:
     if number is None:
         return None, None
     issue = gh_api(f"repos/{repo}/issues/{number}")
-    if AUTO_LABEL not in {label["name"] for label in issue.get("labels", [])}:
+    if not in_scope({label["name"] for label in issue.get("labels", [])}, scope_all):
         return number, None
     head = pr["head"]["sha"]
     detail = gh_api(f"repos/{repo}/pulls/{pr['number']}")
@@ -290,8 +341,10 @@ def collect(repo: str, owner: str, pr: dict) -> tuple[int | None, dict | None]:
     files = gh_api(f"repos/{repo}/pulls/{pr['number']}/files", paginate=True)
     facts = {
         "owner": owner,
-        "label_actor": label_added_by(events, AUTO_LABEL),
-        "owner_comments": sum(1 for c in issue_comments if c["user"]["login"] == owner),
+        "unapproved": owner_approval(issue, events, owner, scope_all),
+        "owner_comments": sum(
+            1 for c in issue_comments if c["user"]["login"] == owner and counts_as_spec(c["body"])
+        ),
         "codex": codex_result(pr_comments, head),
         "test": test_result(checks.get("check_runs", [])),
         "careful": careful_files(changed_paths(files)),
@@ -405,6 +458,10 @@ def main() -> int:
     if mode == "off":
         print("AUTO_MERGE=off のため、何もしません")
         return 0
+    # all: merge:manual のないすべての PR を対象にする（動きは on と同じ。印には on と書く）
+    scope_all = mode == "all"
+    if scope_all:
+        mode = "on"
     if mode != "on":
         mode = "dry-run"
     repo = os.environ["REPO"]
@@ -418,7 +475,7 @@ def main() -> int:
             # main 以外へのマージで Issue を閉じると、main に入っていないのに完了扱いになる
             print(f"PR #{pr['number']}: マージ先が {default_branch} ではないので対象外")
             continue
-        number, facts = collect(repo, owner, pr)
+        number, facts = collect(repo, owner, pr, scope_all)
         if facts is None:
             continue
         verdict, reasons = judge(facts)

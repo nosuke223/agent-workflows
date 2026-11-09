@@ -6,7 +6,7 @@ name: 自動マージの判定
 description: エージェントの PR が自動マージの条件を満たしているかを判定し、満たせば承認してマージする
 inputs:
   mode:
-    description: off（何もしない）/ dry-run（判定をコメントするだけ。空も同じ）/ on（承認してマージする）
+    description: off（何もしない）/ dry-run（判定をコメントするだけ。空も同じ）/ on（merge:auto の Issue の PR を承認してマージする）/ all（merge:manual のないすべての PR を承認してマージする）
     required: false
     default: ""
   agent-account:

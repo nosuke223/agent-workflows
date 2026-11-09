@@ -25,7 +25,7 @@ def codex_comment(sha, status="completed", findings=False, user=m.CODEX_BOT):
 def facts(**over):
     base = {
         "owner": "o",
-        "label_actor": "o",
+        "unapproved": None,
         "owner_comments": 0,
         "codex": True,
         "test": True,
@@ -194,7 +194,7 @@ class JudgeTest(unittest.TestCase):
     def test_each_failed_condition_is_a_reason(self):
         verdict, reasons = m.judge(
             facts(
-                label_actor="agent",
+                unapproved="`merge:auto` を付けたのが所有者ではない（agent）",
                 owner_comments=2,
                 test=False,
                 careful=["CLAUDE.md"],
@@ -338,7 +338,9 @@ class MainTest(unittest.TestCase):
                     }
                 ),
             ),
-            mock.patch.object(m, "collect", return_value=(3, {"pr_comments": list(comments)})),
+            mock.patch.object(
+                m, "collect", return_value=(3, {"pr_comments": list(comments)})
+            ) as collect,
             mock.patch.object(m, "judge", return_value=verdict),
             mock.patch.object(m, "gh", side_effect=gh),
             mock.patch(
@@ -352,6 +354,7 @@ class MainTest(unittest.TestCase):
             ),
         ):
             m.main()
+        self.collect = collect
         return calls
 
     def test_retry_runs_only_when_merging_is_on(self):
@@ -377,6 +380,16 @@ class MainTest(unittest.TestCase):
         }
         calls = self.run_main("on", comments=[forged])
         self.assertIn(("pr", "merge"), [c[:2] for c in calls])
+
+    def test_all_widens_scope_and_merges_like_on(self):
+        calls = self.run_main("all")
+        # 対象を広げることが collect に伝わる
+        self.assertIs(self.collect.call_args[0][3], True)
+        self.assertEqual([c[:2] for c in calls][:2], [("pr", "review"), ("pr", "merge")])
+        # 印は on と同じ（ランナーの読み方を変えない）
+        self.assertIn("verdict=ok mode=on", calls[-1][-1])
+        self.run_main("on")
+        self.assertIs(self.collect.call_args[0][3], False)
 
     def test_dry_run_only_comments(self):
         calls = self.run_main("dry-run")
@@ -642,3 +655,45 @@ class AfterMergeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScopeTest(unittest.TestCase):
+    def test_in_scope(self):
+        self.assertTrue(m.in_scope({"merge:auto"}, False))
+        self.assertFalse(m.in_scope(set(), False))
+        self.assertTrue(m.in_scope(set(), True))
+        self.assertFalse(m.in_scope({"merge:manual"}, True))
+        self.assertFalse(m.in_scope({"merge:auto", "merge:manual"}, False))
+
+    def labeled(self, name, actor):
+        return {"event": "labeled", "label": {"name": name}, "actor": {"login": actor}}
+
+    def test_owner_approval(self):
+        mine, lead = {"user": {"login": "o"}}, {"user": {"login": "agent"}}
+        # merge:auto を所有者が付けた
+        self.assertIsNone(m.owner_approval(lead, [self.labeled("merge:auto", "o")], "o", False))
+        # all でないときは、merge:auto だけを見る
+        self.assertIsNotNone(m.owner_approval(mine, [], "o", False))
+        # all: 所有者が書いた Issue、または所有者が agent:ready を付けた下書き
+        self.assertIsNone(m.owner_approval(mine, [], "o", True))
+        self.assertIsNone(m.owner_approval(lead, [self.labeled("agent:ready", "o")], "o", True))
+        # リード（エージェント）が書き、エージェントが agent:ready を付けただけなら認めない
+        reason = m.owner_approval(lead, [self.labeled("agent:ready", "agent")], "o", True)
+        self.assertIn("agent:ready", reason)
+
+
+class AnswerCommentTest(unittest.TestCase):
+    def test_answers_do_not_count(self):
+        for body in (
+            "1:A, 2:B",
+            "1：A、2：C",
+            "おすすめで",
+            "1:A",
+            " 1:A 2:B 3:A\n",
+            "おすすめでお願いします",
+        ):
+            self.assertFalse(m.counts_as_spec(body), body)
+
+    def test_other_comments_count(self):
+        for body in ("1:A。あと色は赤にして", "おすすめで。ただし件数は10件まで", "ボタンを右に"):
+            self.assertTrue(m.counts_as_spec(body), body)
