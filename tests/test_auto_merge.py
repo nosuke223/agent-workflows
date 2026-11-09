@@ -25,7 +25,7 @@ def codex_comment(sha, status="completed", findings=False, user=m.CODEX_BOT):
 def facts(**over):
     base = {
         "owner": "o",
-        "label_actor": "o",
+        "unapproved": None,
         "owner_comments": 0,
         "codex": True,
         "test": True,
@@ -194,7 +194,7 @@ class JudgeTest(unittest.TestCase):
     def test_each_failed_condition_is_a_reason(self):
         verdict, reasons = m.judge(
             facts(
-                label_actor="agent",
+                unapproved="`merge:auto` を付けたのが所有者ではない（agent）",
                 owner_comments=2,
                 test=False,
                 careful=["CLAUDE.md"],
@@ -642,3 +642,28 @@ class AfterMergeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScopeTest(unittest.TestCase):
+    def test_in_scope(self):
+        self.assertTrue(m.in_scope({"merge:auto"}, False))
+        self.assertFalse(m.in_scope(set(), False))
+        self.assertTrue(m.in_scope(set(), True))
+        self.assertFalse(m.in_scope({"merge:manual"}, True))
+        self.assertFalse(m.in_scope({"merge:auto", "merge:manual"}, False))
+
+    def labeled(self, name, actor):
+        return {"event": "labeled", "label": {"name": name}, "actor": {"login": actor}}
+
+    def test_owner_approval(self):
+        mine, lead = {"user": {"login": "o"}}, {"user": {"login": "agent"}}
+        # merge:auto を所有者が付けた
+        self.assertIsNone(m.owner_approval(lead, [self.labeled("merge:auto", "o")], "o", False))
+        # all でないときは、merge:auto だけを見る
+        self.assertIsNotNone(m.owner_approval(mine, [], "o", False))
+        # all: 所有者が書いた Issue、または所有者が agent:ready を付けた下書き
+        self.assertIsNone(m.owner_approval(mine, [], "o", True))
+        self.assertIsNone(m.owner_approval(lead, [self.labeled("agent:ready", "o")], "o", True))
+        # リード（エージェント）が書き、エージェントが agent:ready を付けただけなら認めない
+        reason = m.owner_approval(lead, [self.labeled("agent:ready", "agent")], "o", True)
+        self.assertIn("agent:ready", reason)
