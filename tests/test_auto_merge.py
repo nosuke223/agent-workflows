@@ -667,3 +667,20 @@ class ScopeTest(unittest.TestCase):
         # リード（エージェント）が書き、エージェントが agent:ready を付けただけなら認めない
         reason = m.owner_approval(lead, [self.labeled("agent:ready", "agent")], "o", True)
         self.assertIn("agent:ready", reason)
+
+
+class AnswerCommentTest(unittest.TestCase):
+    def test_answers_do_not_count(self):
+        for body in (
+            "1:A, 2:B",
+            "1：A、2：C",
+            "おすすめで",
+            "1:A",
+            " 1:A 2:B 3:A\n",
+            "おすすめでお願いします",
+        ):
+            self.assertFalse(m.counts_as_spec(body), body)
+
+    def test_other_comments_count(self):
+        for body in ("1:A。あと色は赤にして", "おすすめで。ただし件数は10件まで", "ボタンを右に"):
+            self.assertTrue(m.counts_as_spec(body), body)

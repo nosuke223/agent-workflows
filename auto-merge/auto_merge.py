@@ -113,6 +113,19 @@ def label_added_by(events: list, label: str) -> str | None:
     return actor
 
 
+# 「判断してほしいこと」への答えだけのコメント（例: 「1:A, 2:B」「おすすめで」）。
+# 選択肢は本文にあり、
+# Codex も本文で読めるので、自動マージの対象から外す理由にしない
+ANSWER_RE = re.compile(
+    r"^\s*(おすすめで(お願いします)?|(\d+\s*[:：]\s*[A-Za-z]\s*[,、，]?\s*)+)[。.]?\s*$"
+)
+
+
+def counts_as_spec(body: str) -> bool:
+    """所有者の Issue へのコメントのうち、仕様を足しうるもの（答えだけのものは除く）。"""
+    return not ANSWER_RE.match(body or "")
+
+
 def in_scope(labels: set, scope_all: bool) -> bool:
     """自動マージの対象か。
 
@@ -329,7 +342,9 @@ def collect(
     facts = {
         "owner": owner,
         "unapproved": owner_approval(issue, events, owner, scope_all),
-        "owner_comments": sum(1 for c in issue_comments if c["user"]["login"] == owner),
+        "owner_comments": sum(
+            1 for c in issue_comments if c["user"]["login"] == owner and counts_as_spec(c["body"])
+        ),
         "codex": codex_result(pr_comments, head),
         "test": test_result(checks.get("check_runs", [])),
         "careful": careful_files(changed_paths(files)),
