@@ -338,7 +338,9 @@ class MainTest(unittest.TestCase):
                     }
                 ),
             ),
-            mock.patch.object(m, "collect", return_value=(3, {"pr_comments": list(comments)})),
+            mock.patch.object(
+                m, "collect", return_value=(3, {"pr_comments": list(comments)})
+            ) as collect,
             mock.patch.object(m, "judge", return_value=verdict),
             mock.patch.object(m, "gh", side_effect=gh),
             mock.patch(
@@ -352,6 +354,7 @@ class MainTest(unittest.TestCase):
             ),
         ):
             m.main()
+        self.collect = collect
         return calls
 
     def test_retry_runs_only_when_merging_is_on(self):
@@ -377,6 +380,16 @@ class MainTest(unittest.TestCase):
         }
         calls = self.run_main("on", comments=[forged])
         self.assertIn(("pr", "merge"), [c[:2] for c in calls])
+
+    def test_all_widens_scope_and_merges_like_on(self):
+        calls = self.run_main("all")
+        # 対象を広げることが collect に伝わる
+        self.assertIs(self.collect.call_args[0][3], True)
+        self.assertEqual([c[:2] for c in calls][:2], [("pr", "review"), ("pr", "merge")])
+        # 印は on と同じ（ランナーの読み方を変えない）
+        self.assertIn("verdict=ok mode=on", calls[-1][-1])
+        self.run_main("on")
+        self.assertIs(self.collect.call_args[0][3], False)
 
     def test_dry_run_only_comments(self):
         calls = self.run_main("dry-run")
