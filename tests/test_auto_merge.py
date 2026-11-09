@@ -691,9 +691,20 @@ class AnswerCommentTest(unittest.TestCase):
             "1:A",
             " 1:A 2:B 3:A\n",
             "おすすめでお願いします",
+            "A",
+            "Aで",
+            "Bでお願いします。",
+            "Ａ",
+            "1:A, 2:Bで",
         ):
             self.assertFalse(m.counts_as_spec(body), body)
 
     def test_other_comments_count(self):
-        for body in ("1:A。あと色は赤にして", "おすすめで。ただし件数は10件まで", "ボタンを右に"):
+        for body in (
+            "1:A。あと色は赤にして",
+            "おすすめで。ただし件数は10件まで",
+            "ボタンを右に",
+            "Aで、色は赤",
+            "AB",
+        ):
             self.assertTrue(m.counts_as_spec(body), body)
