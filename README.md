@@ -6,7 +6,7 @@ GitHub では、公開のリポジトリから非公開のリポジトリのワ�
 
 | 部品 | 中身 | 呼び出し側 |
 |---|---|---|
-| `auto-merge` | エージェントの PR が条件を満たせば、承認してマージする。`mode` が `on` なら所有者が `merge:auto` を付けた Issue の PR だけ、`all` なら `merge:manual` のないすべての PR（所有者が書いたか、所有者が `agent:ready` を付けた Issue）（`auto-merge/auto_merge.py`） | `.github/workflows/auto-merge.yml` |
+| `auto-merge` | エージェントの PR が条件を満たせば、承認してマージする。`mode` が `on` なら所有者が `merge:auto` を付けた Issue の PR だけ、`all` なら `merge:manual` のないすべての PR（所有者が書いたか、所有者が `agent:ready` を付けた Issue）と、Dependabot の更新の PR（依存のファイルだけを変え、テストが通ったもの）（`auto-merge/auto_merge.py`） | `.github/workflows/auto-merge.yml` |
 | `ci/python-cli` | 型 python-cli のテスト（uv、pytest、ruff） | `.github/workflows/ci.yml`（ジョブ名 `test`） |
 | `ci/web` | 型 web のテスト（npm の lint、test、build、Playwright の e2e） | `.github/workflows/ci.yml`（ジョブ名 `test`） |
 

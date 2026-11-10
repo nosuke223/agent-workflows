@@ -26,6 +26,20 @@ import sys
 
 CODEX_BOT = "chatgpt-codex-connector[bot]"
 ACTIONS_BOT = "github-actions[bot]"
+DEPENDABOT = "dependabot[bot]"
+# Dependabot の更新の PR で、変えてよいファイル（依存の宣言とロックファイル）。
+# これ以外が変わっていたら人が見る
+DEPENDENCY_NAMES = {
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lock",
+    "bun.lockb",
+    "pyproject.toml",
+    "uv.lock",
+    "requirements.txt",
+}
 CODEX_STATE_RE = re.compile(r"<!-- codex-review-state:v1 (\{.*?\}) -->", re.DOTALL)
 AUTO_LABEL = "merge:auto"
 # AUTO_MERGE=all のとき、これが付いた Issue の PR は自動マージしない（人が見る）
@@ -285,6 +299,78 @@ def judge(facts: dict) -> tuple[str, list[str]]:
     return ("ng" if reasons else "ok"), reasons
 
 
+def judge_dependency(pr: dict, files: list[str], test: bool | None, mergeable) -> tuple:
+    """Dependabot の更新の PR を判定する。("wait" | "ok" | "ng", 満たしていない条件)。
+
+    大きな版の更新（メジャー）は、各プロジェクトの .github/dependabot.yml で作らせない。
+    届くのは小さな更新だけなので、依存のファイルだけを変えていて、テストが通れば自動でマージする。
+    Codex のレビューは待たない（版の更新は、テストで確かめる）。
+    """
+    if test is None or mergeable is None:
+        return "wait", []
+    reasons = []
+    if not (pr.get("head") or {}).get("ref", "").startswith("dependabot/"):
+        reasons.append("Dependabot のブランチではない")
+    others = [
+        f for f in files if f.split("/")[-1] not in DEPENDENCY_NAMES or f.startswith(".github/")
+    ]
+    if others:
+        reasons.append("依存のファイル以外も変えている: " + ", ".join(others))
+    if test is False:
+        reasons.append("GitHub 上のテストか lint が失敗している")
+    if mergeable is False:
+        reasons.append("main と衝突している")
+    return ("ng" if reasons else "ok"), reasons
+
+
+def handle_dependency_pr(repo: str, pr: dict) -> None:
+    """Dependabot の更新の PR を判定し、条件を満たせば承認してマージし、ブランチを消す。"""
+    sha = pr["head"]["sha"]
+    detail = gh_api(f"repos/{repo}/pulls/{pr['number']}")
+    files = changed_paths(gh_api(f"repos/{repo}/pulls/{pr['number']}/files", paginate=True))
+    checks = gh_api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100")
+    verdict, reasons = judge_dependency(
+        pr, files, test_result(checks.get("check_runs", [])), detail.get("mergeable")
+    )
+    comments = gh_api(f"repos/{repo}/issues/{pr['number']}/comments", paginate=True)
+    print(f"PR #{pr['number']}（依存の更新）: {verdict} {reasons}")
+    if verdict == "wait" or already_commented(comments, sha, verdict, reasons, "on"):
+        return
+    if verdict == "ok":
+        if merge_failed(comments, sha):
+            return
+        try:
+            approve_and_merge(repo, pr["number"], sha)
+        except subprocess.CalledProcessError as e:
+            error = (e.stderr or "").strip() or f"終了コード {e.returncode}"
+            comment(repo, pr["number"], comment_body("error", [error], sha, "on"))
+            return
+        if not gh_api(f"repos/{repo}/pulls/{pr['number']}").get("merged"):
+            return  # 後片付けは、マージされた後の回の retry_unfinished が行う
+        head_repo = (pr["head"].get("repo") or {}).get("full_name")
+        finish_dependency_merged(repo, pr["number"], pr["head"]["ref"], sha, head_repo)
+        return
+    comment(repo, pr["number"], comment_body(verdict, reasons, sha, "on"))
+
+
+def finish_dependency_merged(
+    repo: str, pr: int, branch: str, sha: str, head_repo: str | None
+) -> bool:
+    """Dependabot の PR のマージの後片付け。ブランチを消し、済んだらコメントを書く（済んだ記録）。
+    消せなければ書かず、次の回の retry_unfinished がやり直す。"""
+    if not delete_branch(repo, branch, sha, head_repo):
+        print(f"PR #{pr}: ブランチを消せませんでした（次の回にやり直す）")
+        return False
+    comment(repo, pr, comment_body("ok", [], sha, "on") + "\n" + CLEANUP_MARKER.format(sha=sha))
+    return True
+
+
+def triggered_by_dependabot() -> bool:
+    """Dependabot がきっかけの実行か。そのときの GitHub Actions のトークンは読むだけなので、
+    承認やマージに失敗し、失敗の印のせいで同じコミットをやり直せなくなる。何もせず、次の回に任せる。"""
+    return DEPENDABOT in (os.environ.get("GITHUB_ACTOR"), os.environ.get("GITHUB_TRIGGERING_ACTOR"))
+
+
 def result_digest(verdict: str, reasons: list[str]) -> str:
     return hashlib.sha256("\n".join([verdict, *reasons]).encode()).hexdigest()[:12]
 
@@ -467,16 +553,25 @@ def main() -> int:
         mode = "on"
     if mode != "on":
         mode = "dry-run"
+    if triggered_by_dependabot():
+        print("Dependabot がきっかけの実行なので、何もしません（トークンが読むだけのため）")
+        return 0
     repo = os.environ["REPO"]
     owner = repo.split("/", 1)[0]
     agent = os.environ["AGENT_ACCOUNT"]
     default_branch = gh_api(f"repos/{repo}")["default_branch"]
     for pr in gh_api(f"repos/{repo}/pulls?state=open&per_page=100"):
-        if pr["user"]["login"] != agent or pr.get("draft"):
+        if pr.get("draft") or (pr.get("base") or {}).get("ref") != default_branch:
+            if pr["user"]["login"] == agent and not pr.get("draft"):
+                # main 以外へのマージで Issue を閉じると、main に入っていないのに完了扱いになる
+                print(f"PR #{pr['number']}: マージ先が {default_branch} ではないので対象外")
             continue
-        if (pr.get("base") or {}).get("ref") != default_branch:
-            # main 以外へのマージで Issue を閉じると、main に入っていないのに完了扱いになる
-            print(f"PR #{pr['number']}: マージ先が {default_branch} ではないので対象外")
+        if pr["user"]["login"] == DEPENDABOT:
+            # 依存の更新の自動マージは、段階3（all）のときだけ
+            if scope_all:
+                handle_dependency_pr(repo, pr)
+            continue
+        if pr["user"]["login"] != agent:
             continue
         number, facts = collect(repo, owner, pr, scope_all)
         if facts is None:
@@ -580,11 +675,14 @@ def retry_unfinished(repo: str, agent: str, default_branch: str) -> None:
     """
     recent = recently_closed_prs(repo, dt.datetime.now(dt.timezone.utc))
     for pr in recent:
-        if not pr.get("merged_at") or pr["user"]["login"] != agent:
+        if not pr.get("merged_at") or pr["user"]["login"] not in (agent, DEPENDABOT):
             continue
         if (pr.get("base") or {}).get("ref") != default_branch:
             continue
-        if not re.match(r"issue-\d+-", pr["head"]["ref"]):
+        dependency = pr["user"]["login"] == DEPENDABOT
+        if dependency and not pr["head"]["ref"].startswith("dependabot/"):
+            continue
+        if not dependency and not re.match(r"issue-\d+-", pr["head"]["ref"]):
             continue
         sha = pr["head"]["sha"]
         comments = gh_api(f"repos/{repo}/issues/{pr['number']}/comments", paginate=True)
@@ -593,6 +691,11 @@ def retry_unfinished(repo: str, agent: str, default_branch: str) -> None:
         detail = gh_api(f"repos/{repo}/pulls/{pr['number']}")
         if (detail.get("merged_by") or {}).get("login") != ACTIONS_BOT:
             continue  # 人がマージしたものは、人が判断する
+        if dependency:
+            print(f"PR #{pr['number']}: 依存の更新の後片付けが済んでいないので、やり直す")
+            head_repo = (pr["head"].get("repo") or {}).get("full_name")
+            finish_dependency_merged(repo, pr["number"], pr["head"]["ref"], sha, head_repo)
+            continue
         owner, name = repo.split("/", 1)
         data = gh_graphql(CLOSING_QUERY, owner=owner, name=name, number=pr["number"])
         refs = data["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
