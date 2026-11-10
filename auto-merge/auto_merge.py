@@ -346,10 +346,23 @@ def handle_dependency_pr(repo: str, pr: dict) -> None:
             comment(repo, pr["number"], comment_body("error", [error], sha, "on"))
             return
         if not gh_api(f"repos/{repo}/pulls/{pr['number']}").get("merged"):
-            return
+            return  # 後片付けは、マージされた後の回の retry_unfinished が行う
         head_repo = (pr["head"].get("repo") or {}).get("full_name")
-        delete_branch(repo, pr["head"]["ref"], sha, head_repo)
+        finish_dependency_merged(repo, pr["number"], pr["head"]["ref"], sha, head_repo)
+        return
     comment(repo, pr["number"], comment_body(verdict, reasons, sha, "on"))
+
+
+def finish_dependency_merged(
+    repo: str, pr: int, branch: str, sha: str, head_repo: str | None
+) -> bool:
+    """Dependabot の PR のマージの後片付け。ブランチを消し、済んだらコメントを書く（済んだ記録）。
+    消せなければ書かず、次の回の retry_unfinished がやり直す。"""
+    if not delete_branch(repo, branch, sha, head_repo):
+        print(f"PR #{pr}: ブランチを消せませんでした（次の回にやり直す）")
+        return False
+    comment(repo, pr, comment_body("ok", [], sha, "on") + "\n" + CLEANUP_MARKER.format(sha=sha))
+    return True
 
 
 def triggered_by_dependabot() -> bool:
@@ -662,11 +675,14 @@ def retry_unfinished(repo: str, agent: str, default_branch: str) -> None:
     """
     recent = recently_closed_prs(repo, dt.datetime.now(dt.timezone.utc))
     for pr in recent:
-        if not pr.get("merged_at") or pr["user"]["login"] != agent:
+        if not pr.get("merged_at") or pr["user"]["login"] not in (agent, DEPENDABOT):
             continue
         if (pr.get("base") or {}).get("ref") != default_branch:
             continue
-        if not re.match(r"issue-\d+-", pr["head"]["ref"]):
+        dependency = pr["user"]["login"] == DEPENDABOT
+        if dependency and not pr["head"]["ref"].startswith("dependabot/"):
+            continue
+        if not dependency and not re.match(r"issue-\d+-", pr["head"]["ref"]):
             continue
         sha = pr["head"]["sha"]
         comments = gh_api(f"repos/{repo}/issues/{pr['number']}/comments", paginate=True)
@@ -675,6 +691,11 @@ def retry_unfinished(repo: str, agent: str, default_branch: str) -> None:
         detail = gh_api(f"repos/{repo}/pulls/{pr['number']}")
         if (detail.get("merged_by") or {}).get("login") != ACTIONS_BOT:
             continue  # 人がマージしたものは、人が判断する
+        if dependency:
+            print(f"PR #{pr['number']}: 依存の更新の後片付けが済んでいないので、やり直す")
+            head_repo = (pr["head"].get("repo") or {}).get("full_name")
+            finish_dependency_merged(repo, pr["number"], pr["head"]["ref"], sha, head_repo)
+            continue
         owner, name = repo.split("/", 1)
         data = gh_graphql(CLOSING_QUERY, owner=owner, name=name, number=pr["number"])
         refs = data["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]

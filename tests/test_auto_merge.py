@@ -772,6 +772,38 @@ class DependencyTest(unittest.TestCase):
         delete.assert_called_once_with("o/r", self.PR["head"]["ref"], HEAD, "o/r")
         self.assertIn("verdict=ok", calls[-1][1])
 
+    def test_failed_branch_deletion_leaves_no_cleanup_record(self):
+        with (
+            mock.patch.object(m, "comment") as comment,
+            mock.patch.object(m, "delete_branch", return_value=False),
+        ):
+            self.assertFalse(m.finish_dependency_merged("o/r", 9, "dependabot/x", HEAD, "o/r"))
+        comment.assert_not_called()
+        with (
+            mock.patch.object(m, "comment") as comment,
+            mock.patch.object(m, "delete_branch", return_value=True),
+        ):
+            self.assertTrue(m.finish_dependency_merged("o/r", 9, "dependabot/x", HEAD, "o/r"))
+        self.assertIn(m.CLEANUP_MARKER.format(sha=HEAD), comment.call_args[0][2])
+
+    def test_retry_unfinished_cleans_up_dependency_prs(self):
+        merged = dict(self.PR, merged_at="2026-11-10T00:00:00Z")
+
+        def gh_api(path, paginate=False):
+            if path.endswith("/comments"):
+                return []
+            return {"merged_by": {"login": m.ACTIONS_BOT}}
+
+        with (
+            mock.patch.object(m, "recently_closed_prs", return_value=[merged]),
+            mock.patch.object(m, "gh_api", side_effect=gh_api),
+            mock.patch.object(m, "finish_dependency_merged") as finish,
+            mock.patch.object(m, "finish_merged") as finish_issue,
+        ):
+            m.retry_unfinished("o/r", "agent", "main")
+        finish.assert_called_once_with("o/r", 9, self.PR["head"]["ref"], HEAD, "o/r")
+        finish_issue.assert_not_called()
+
     def test_failed_tests_only_comment(self):
         calls, delete = self.run_handle(["package.json"], test="failure")
         self.assertEqual(len(calls), 1)
