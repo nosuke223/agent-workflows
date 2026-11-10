@@ -319,7 +319,13 @@ class MainTest(unittest.TestCase):
             if merge_error and args[:2] == ("pr", "merge"):
                 raise subprocess.CalledProcessError(1, "gh", stderr=merge_error)
 
-        env = {"AUTO_MERGE": mode, "REPO": "o/r", "AGENT_ACCOUNT": "agent"}
+        env = {
+            "AUTO_MERGE": mode,
+            "REPO": "o/r",
+            "AGENT_ACCOUNT": "agent",
+            "GITHUB_ACTOR": "o",
+            "GITHUB_TRIGGERING_ACTOR": "o",
+        }
         with (
             mock.patch.dict(os.environ, env),
             mock.patch.object(
@@ -708,3 +714,99 @@ class AnswerCommentTest(unittest.TestCase):
             "AB",
         ):
             self.assertTrue(m.counts_as_spec(body), body)
+
+
+class DependencyTest(unittest.TestCase):
+    PR = {
+        "number": 9,
+        "user": {"login": "dependabot[bot]"},
+        "head": {
+            "sha": HEAD,
+            "ref": "dependabot/npm_and_yarn/dependencies-1a2b",
+            "repo": {"full_name": "o/r"},
+        },
+        "base": {"ref": "main"},
+    }
+
+    def test_judge(self):
+        files = ["package.json", "package-lock.json"]
+        self.assertEqual(m.judge_dependency(self.PR, files, True, True), ("ok", []))
+        self.assertEqual(m.judge_dependency(self.PR, files, None, True)[0], "wait")
+        self.assertEqual(m.judge_dependency(self.PR, files, True, None)[0], "wait")
+        verdict, reasons = m.judge_dependency(self.PR, files, False, True)
+        self.assertEqual(verdict, "ng")
+        self.assertIn("テスト", reasons[0])
+        # 依存のファイル以外（ワークフローなど）を変えていたら人が見る
+        verdict, reasons = m.judge_dependency(
+            self.PR, ["uv.lock", ".github/workflows/ci.yml"], True, True
+        )
+        self.assertEqual(verdict, "ng")
+        self.assertIn(".github/workflows/ci.yml", reasons[0])
+        verdict, _ = m.judge_dependency(self.PR, [".github/package.json"], True, True)
+        self.assertEqual(verdict, "ng")
+
+    def run_handle(self, files, test="success", comments=()):
+        calls = []
+
+        def gh_api(path, paginate=False):
+            if path.endswith("/files"):
+                return [{"filename": f} for f in files]
+            if "check-runs" in path:
+                return {"check_runs": [{"name": "test", "status": "completed", "conclusion": test}]}
+            if path.endswith("/comments"):
+                return list(comments)
+            return {"mergeable": True, "merged": True}
+
+        with (
+            mock.patch.object(m, "gh_api", side_effect=gh_api),
+            mock.patch.object(m, "gh", side_effect=lambda *a: calls.append(a)),
+            mock.patch.object(m, "delete_branch", return_value=True) as delete,
+            mock.patch.object(m, "comment", side_effect=lambda r, n, b: calls.append(("c", b))),
+        ):
+            m.handle_dependency_pr("o/r", self.PR)
+        return calls, delete
+
+    def test_merges_and_deletes_branch(self):
+        calls, delete = self.run_handle(["package.json", "package-lock.json"])
+        self.assertEqual([c[:2] for c in calls[:2]], [("pr", "review"), ("pr", "merge")])
+        delete.assert_called_once_with("o/r", self.PR["head"]["ref"], HEAD, "o/r")
+        self.assertIn("verdict=ok", calls[-1][1])
+
+    def test_failed_tests_only_comment(self):
+        calls, delete = self.run_handle(["package.json"], test="failure")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("verdict=ng", calls[0][1])
+        delete.assert_not_called()
+
+    def run_main(self, mode, actor="o"):
+        env = {
+            "AUTO_MERGE": mode,
+            "REPO": "o/r",
+            "AGENT_ACCOUNT": "agent",
+            "GITHUB_ACTOR": actor,
+            "GITHUB_TRIGGERING_ACTOR": actor,
+        }
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(
+                m,
+                "gh_api",
+                side_effect=lambda path, paginate=False: (
+                    {"default_branch": "main"} if path == "repos/o/r" else [self.PR]
+                ),
+            ),
+            mock.patch.object(m, "handle_dependency_pr") as handle,
+            mock.patch.object(m, "collect") as collect,
+            mock.patch.object(m, "retry_unfinished"),
+        ):
+            m.main()
+        collect.assert_not_called()
+        return handle
+
+    def test_only_in_all_mode(self):
+        self.run_main("all").assert_called_once_with("o/r", self.PR)
+        self.run_main("on").assert_not_called()
+
+    def test_runs_triggered_by_dependabot_do_nothing(self):
+        # Dependabot がきっかけの実行は、トークンが読むだけなので何もしない
+        self.run_main("all", actor="dependabot[bot]").assert_not_called()
