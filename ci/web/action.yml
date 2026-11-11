@@ -32,7 +32,18 @@ runs:
     - name: 画面を操作するテストのブラウザを入れる
       if: hashFiles('playwright.config.*') != ''
       shell: bash
-      run: npx playwright install --with-deps chromium
+      # Ubuntu の部品の取得が、GitHub の機械の一時的なネットワークの失敗で止まることがある
+      # （meal-log PR #69）。コードとは関係ないので、少し待って3回までやり直す
+      run: |
+        for attempt in 1 2 3; do
+          if timeout 900 npx playwright install --with-deps chromium; then
+            exit 0
+          fi
+          echo "::warning::ブラウザの準備に失敗しました（${attempt}回目）。少し待ってやり直します"
+          sleep $((attempt * 30))
+        done
+        echo "::error::ブラウザの準備に3回失敗しました（ネットワークの一時的な失敗のことが多い。動かし直してください）"
+        exit 1
     - name: 画面を操作するテスト
       if: hashFiles('playwright.config.*') != ''
       shell: bash
