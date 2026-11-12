@@ -162,11 +162,15 @@ def parent_plan_auto(repo: str, issue: dict, owner: str) -> bool:
     url = issue.get("parent_issue_url")
     if not url:
         return False
-    parent = gh_api(url.split("api.github.com/", 1)[-1])
+    path = url.split("api.github.com/", 1)[-1]
+    # 別のリポジトリの計画は認めない（その計画の所有者や履歴は、このリポジトリのものではないため）
+    if not path.startswith(f"repos/{repo}/issues/"):
+        return False
+    parent = gh_api(path)
     labels = {label["name"] for label in parent.get("labels", [])}
     if not {PLAN_LABEL, PLAN_AUTO_LABEL} <= labels or parent.get("state") != "open":
         return False
-    events = gh_api(f"repos/{repo}/issues/{parent['number']}/events", paginate=True)
+    events = gh_api(f"{path}/events", paginate=True)
     return label_added_by(events, PLAN_AUTO_LABEL) == owner
 
 

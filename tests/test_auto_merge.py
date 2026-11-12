@@ -855,6 +855,7 @@ class PlanAutoApprovalTest(unittest.TestCase):
     ):
         def gh_api(path, paginate=False):
             if path.endswith("/events"):
+                assert path == url.split("api.github.com/", 1)[-1] + "/events", path
                 return [
                     {"event": "labeled", "label": {"name": "plan:auto"}, "actor": {"login": actor}}
                 ]
@@ -869,3 +870,10 @@ class PlanAutoApprovalTest(unittest.TestCase):
         self.assertFalse(self.run_parent(["plan", "plan:auto"], actor="agent"))
         self.assertFalse(self.run_parent(["plan", "plan:auto"], state="closed"))
         self.assertFalse(self.run_parent(["plan", "plan:auto"], url=None))
+        # 別のリポジトリの計画（同じ番号でも）は認めない
+        self.assertFalse(
+            self.run_parent(["plan", "plan:auto"], url="https://api.github.com/repos/x/y/issues/3")
+        )
+        self.assertFalse(
+            self.run_parent(["plan", "plan:auto"], url="https://api.github.com/repos/o/r2/issues/3")
+        )
