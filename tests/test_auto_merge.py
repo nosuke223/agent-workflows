@@ -842,3 +842,38 @@ class DependencyTest(unittest.TestCase):
     def test_runs_triggered_by_dependabot_do_nothing(self):
         # Dependabot がきっかけの実行は、トークンが読むだけなので何もしない
         self.run_main("all", actor="dependabot[bot]").assert_not_called()
+
+
+class PlanAutoApprovalTest(unittest.TestCase):
+    def test_child_of_owner_plan_auto_is_approved(self):
+        lead = {"user": {"login": "agent"}}
+        self.assertIsNone(m.owner_approval(lead, [], "o", True, plan_auto=True))
+        self.assertIn("plan:auto", m.owner_approval(lead, [], "o", True, plan_auto=False))
+
+    def run_parent(
+        self, labels, actor="o", state="open", url="https://api.github.com/repos/o/r/issues/3"
+    ):
+        def gh_api(path, paginate=False):
+            if path.endswith("/events"):
+                assert path == url.split("api.github.com/", 1)[-1] + "/events", path
+                return [
+                    {"event": "labeled", "label": {"name": "plan:auto"}, "actor": {"login": actor}}
+                ]
+            return {"number": 3, "state": state, "labels": [{"name": n} for n in labels]}
+
+        with mock.patch.object(m, "gh_api", side_effect=gh_api):
+            return m.parent_plan_auto("o/r", {"parent_issue_url": url}, "o")
+
+    def test_parent_plan_auto(self):
+        self.assertTrue(self.run_parent(["plan", "plan:auto"]))
+        self.assertFalse(self.run_parent(["plan"]))
+        self.assertFalse(self.run_parent(["plan", "plan:auto"], actor="agent"))
+        self.assertFalse(self.run_parent(["plan", "plan:auto"], state="closed"))
+        self.assertFalse(self.run_parent(["plan", "plan:auto"], url=None))
+        # 別のリポジトリの計画（同じ番号でも）は認めない
+        self.assertFalse(
+            self.run_parent(["plan", "plan:auto"], url="https://api.github.com/repos/x/y/issues/3")
+        )
+        self.assertFalse(
+            self.run_parent(["plan", "plan:auto"], url="https://api.github.com/repos/o/r2/issues/3")
+        )

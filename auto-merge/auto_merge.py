@@ -153,11 +153,35 @@ def in_scope(labels: set, scope_all: bool) -> bool:
     return scope_all or AUTO_LABEL in labels
 
 
-def owner_approval(issue: dict, events: list, owner: str, scope_all: bool) -> str | None:
+PLAN_LABEL = "plan"
+PLAN_AUTO_LABEL = "plan:auto"
+
+
+def parent_plan_auto(repo: str, issue: dict, owner: str) -> bool:
+    """Issue の親が、所有者が plan:auto を付けた計画の Issue か（自動で進める計画の子）。"""
+    url = issue.get("parent_issue_url")
+    if not url:
+        return False
+    path = url.split("api.github.com/", 1)[-1]
+    # 別のリポジトリの計画は認めない（その計画の所有者や履歴は、このリポジトリのものではないため）
+    if not path.startswith(f"repos/{repo}/issues/"):
+        return False
+    parent = gh_api(path)
+    labels = {label["name"] for label in parent.get("labels", [])}
+    if not {PLAN_LABEL, PLAN_AUTO_LABEL} <= labels or parent.get("state") != "open":
+        return False
+    events = gh_api(f"{path}/events", paginate=True)
+    return label_added_by(events, PLAN_AUTO_LABEL) == owner
+
+
+def owner_approval(
+    issue: dict, events: list, owner: str, scope_all: bool, plan_auto: bool = False
+) -> str | None:
     """所有者が自動マージを認めていなければ、その理由。認めていれば None。
 
     all でないときは、所有者が merge:auto を付けたことだけを見る。all のときは、Issue を書いたのが
-    所有者か、所有者が agent:ready を付けた（リードの下書きを承認した）ことでもよい。
+    所有者か、所有者が agent:ready を付けた（リードの下書きを承認した）こと、または所有者が自動で
+    進めることを承認した計画（plan:auto）の子であることでもよい。
     """
     actor = label_added_by(events, AUTO_LABEL)
     if actor == owner:
@@ -173,7 +197,12 @@ def owner_approval(issue: dict, events: list, owner: str, scope_all: bool) -> st
         for e in events
     ):
         return None
-    return f"所有者が書いた Issue でも、所有者が `{READY_LABEL}` を付けた Issue でもない"
+    if plan_auto:
+        return None
+    return (
+        f"所有者が書いた Issue でも、所有者が `{READY_LABEL}` を付けた Issue でも、"
+        f"所有者が `{PLAN_AUTO_LABEL}` を付けた計画の子でもない"
+    )
 
 
 def codex_state(comments: list) -> dict | None:
@@ -430,7 +459,9 @@ def collect(
     files = gh_api(f"repos/{repo}/pulls/{pr['number']}/files", paginate=True)
     facts = {
         "owner": owner,
-        "unapproved": owner_approval(issue, events, owner, scope_all),
+        "unapproved": owner_approval(
+            issue, events, owner, scope_all, scope_all and parent_plan_auto(repo, issue, owner)
+        ),
         "owner_comments": sum(
             1 for c in issue_comments if c["user"]["login"] == owner and counts_as_spec(c["body"])
         ),
