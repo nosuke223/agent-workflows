@@ -877,3 +877,26 @@ class PlanAutoApprovalTest(unittest.TestCase):
         self.assertFalse(
             self.run_parent(["plan", "plan:auto"], url="https://api.github.com/repos/o/r2/issues/3")
         )
+
+
+class OwnerAccountTest(unittest.TestCase):
+    def test_defaults_to_the_account_that_holds_the_repo(self):
+        self.assertEqual(m.owner_account("o/r", None), "o")
+        self.assertEqual(m.owner_account("o/r", ""), "o")
+        self.assertEqual(m.owner_account("o/r", "  "), "o")
+
+    def test_configured_owner_wins_in_an_organization_repo(self):
+        self.assertEqual(m.owner_account("acme/app", " alice "), "alice")
+
+    def test_organization_name_is_not_trusted_as_the_owner(self):
+        # 組織のリポジトリでは、組織の名前と同じログイン名の人が付けた agent:ready は承認にならない
+        owner = m.owner_account("acme/app", "alice")
+        issue = {"user": {"login": "agent-bot"}, "labels": []}
+        by_org = [
+            {"event": "labeled", "label": {"name": "agent:ready"}, "actor": {"login": "acme"}}
+        ]
+        by_owner = [
+            {"event": "labeled", "label": {"name": "agent:ready"}, "actor": {"login": "alice"}}
+        ]
+        self.assertIsNotNone(m.owner_approval(issue, by_org, owner, True))
+        self.assertIsNone(m.owner_approval(issue, by_owner, owner, True))

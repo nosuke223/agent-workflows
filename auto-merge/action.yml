@@ -13,6 +13,10 @@ inputs:
     description: エージェントの GitHub アカウント
     required: false
     default: nosuke223-agent
+  owner-account:
+    description: 所有者（Issue を書き、承認する人）の GitHub アカウント。空なら、リポジトリの持ち主。組織のリポジトリでは、所有者のログイン名を入れる
+    required: false
+    default: ""
   github-token:
     description: GitHub Actions のトークン（呼び出し側の github.token）
     required: true
@@ -25,5 +29,6 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ github.repository }}
         AGENT_ACCOUNT: ${{ inputs.agent-account }}
+        OWNER_ACCOUNT: ${{ inputs.owner-account }}
         AUTO_MERGE: ${{ inputs.mode }}
       run: python3 "$GITHUB_ACTION_PATH/auto_merge.py"

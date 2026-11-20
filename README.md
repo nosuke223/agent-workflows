@@ -22,5 +22,6 @@ jobs:
 ```
 
 - 呼び出し側は `@main` を使う。このリポジトリの main を変えると、次の実行からすべてのプロジェクトに効く。変更は PR で行い、Codex のレビューとテストを通してからマージする
+- `auto-merge` の所有者（Issue を書き、承認する人）は、ふつうはリポジトリの持ち主。組織のリポジトリでは、呼び出し側が `owner-account` に所有者のログイン名を渡す（各プロジェクトでは、リポジトリの変数 `OWNER_ACCOUNT`）
 - 自動マージの方式と条件は、agent-env の `docs/decisions.md`「自動マージの方式」と `docs/review-and-merge.md`「自動マージ」
 - テスト: `python3 -m unittest discover -s tests`。lint: `uvx ruff check .`、`uvx ruff format --check .`

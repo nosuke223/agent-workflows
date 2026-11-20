@@ -7,6 +7,7 @@
     GH_TOKEN       GitHub Actions のトークン
     REPO           所有者/リポジトリ
     AGENT_ACCOUNT  エージェントの GitHub アカウント
+    OWNER_ACCOUNT  所有者の GitHub アカウント（空なら、リポジトリの持ち主。組織のリポジトリで使う）
     AUTO_MERGE     off: 何もしない / dry-run（未設定も同じ）: 判定の結果をコメントするだけ /
                    on: 条件を満たしたら承認してマージする
 
@@ -573,6 +574,16 @@ def close_issue(repo: str, issue: int) -> None:
             gh("issue", "edit", str(issue), "-R", repo, "--remove-label", label["name"])
 
 
+def owner_account(repo: str, configured: str | None) -> str:
+    """所有者（Issue を書き、承認する人）の GitHub のログイン名。
+
+    ふつうはリポジトリの持ち主（`所有者/リポジトリ` の前半）。組織のリポジトリでは持ち主が
+    組織の名前になり、人のログイン名と違うので、呼び出し側が owner-account
+    （変数 OWNER_ACCOUNT）で決める。
+    """
+    return (configured or "").strip() or repo.split("/", 1)[0]
+
+
 def main() -> int:
     mode = os.environ.get("AUTO_MERGE") or "dry-run"
     if mode == "off":
@@ -588,7 +599,7 @@ def main() -> int:
         print("Dependabot がきっかけの実行なので、何もしません（トークンが読むだけのため）")
         return 0
     repo = os.environ["REPO"]
-    owner = repo.split("/", 1)[0]
+    owner = owner_account(repo, os.environ.get("OWNER_ACCOUNT"))
     agent = os.environ["AGENT_ACCOUNT"]
     default_branch = gh_api(f"repos/{repo}")["default_branch"]
     for pr in gh_api(f"repos/{repo}/pulls?state=open&per_page=100"):
