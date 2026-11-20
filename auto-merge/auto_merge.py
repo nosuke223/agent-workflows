@@ -441,9 +441,13 @@ query($owner: String!, $name: String!, $number: Int!) {
 def collect(
     repo: str, owner: str, pr: dict, scope_all: bool = False
 ) -> tuple[int | None, dict | None]:
-    """PR の Issue 番号と、判定に使う事実。対象外なら (None, None)。"""
-    name = repo.split("/", 1)[1]
-    data = gh_graphql(CLOSING_QUERY, owner=owner, name=name, number=pr["number"])
+    """PR の Issue 番号と、判定に使う事実。対象外なら (None, None)。
+
+    owner は所有者（承認する人）のログイン名で、承認の判定にだけ使う。組織のリポジトリでは
+    リポジトリの持ち主と違うので、GitHub への問い合わせ先は repo から決める。
+    """
+    holder, name = repo.split("/", 1)
+    data = gh_graphql(CLOSING_QUERY, owner=holder, name=name, number=pr["number"])
     refs = data["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
     number = issue_number_of(pr["head"]["ref"], closing_numbers(refs, repo))
     if number is None:
