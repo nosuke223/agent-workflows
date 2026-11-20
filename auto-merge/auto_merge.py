@@ -24,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 CODEX_BOT = "chatgpt-codex-connector[bot]"
 ACTIONS_BOT = "github-actions[bot]"
@@ -304,6 +305,42 @@ def careful_files(files: list[str]) -> list[str]:
     return [f for f in files if is_careful(f)]
 
 
+def pending_facts(facts: dict) -> list[str]:
+    """wait のときに、何がまだなのか（ログに出す。止まった理由を後から読めるように）。"""
+    pending = []
+    if facts["codex"] is None:
+        pending.append("Codex のレビューがまだ")
+    elif facts["codex"] is False:
+        pending.append("Codex の指摘がある")
+    if facts["test"] is None:
+        pending.append("テストがまだ")
+    if facts["mergeable"] is None:
+        pending.append("衝突の判定がまだ")
+    return pending
+
+
+# GitHub は、main が動いた後の最初の問い合わせでは、衝突の有無（mergeable）を null で返し、
+# 裏で計算する。少し待って読み直すと入っている
+MERGEABLE_RETRIES = 5
+MERGEABLE_WAIT_SECONDS = 3
+
+
+def pr_detail(repo: str, number: int) -> dict:
+    """PR の詳細。衝突の有無が計算中（null）なら、少し待って読み直す。
+
+    読み直さないと、判定は wait になり、次のきっかけ（テストの完了、Codex のコメント、定期の実行）
+    まで何もしない。きっかけが出尽くした後だと、定期の実行（数時間おきに間引かれる）まで止まる
+    （meal-log PR #121）。
+    """
+    detail = gh_api(f"repos/{repo}/pulls/{number}")
+    for _ in range(MERGEABLE_RETRIES):
+        if detail.get("mergeable") is not None or detail.get("state") != "open":
+            break
+        time.sleep(MERGEABLE_WAIT_SECONDS)
+        detail = gh_api(f"repos/{repo}/pulls/{number}")
+    return detail
+
+
 def judge(facts: dict) -> tuple[str, list[str]]:
     """facts から、("wait" | "ok" | "ng", 満たしていない条件) を返す。
 
@@ -356,7 +393,7 @@ def judge_dependency(pr: dict, files: list[str], test: bool | None, mergeable) -
 def handle_dependency_pr(repo: str, pr: dict) -> None:
     """Dependabot の更新の PR を判定し、条件を満たせば承認してマージし、ブランチを消す。"""
     sha = pr["head"]["sha"]
-    detail = gh_api(f"repos/{repo}/pulls/{pr['number']}")
+    detail = pr_detail(repo, pr["number"])
     files = changed_paths(gh_api(f"repos/{repo}/pulls/{pr['number']}/files", paginate=True))
     checks = gh_api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100")
     verdict, reasons = judge_dependency(
@@ -456,7 +493,7 @@ def collect(
     if not in_scope({label["name"] for label in issue.get("labels", [])}, scope_all):
         return number, None
     head = pr["head"]["sha"]
-    detail = gh_api(f"repos/{repo}/pulls/{pr['number']}")
+    detail = pr_detail(repo, pr["number"])
     events = gh_api(f"repos/{repo}/issues/{number}/events", paginate=True)
     issue_comments = gh_api(f"repos/{repo}/issues/{number}/comments", paginate=True)
     pr_comments = gh_api(f"repos/{repo}/issues/{pr['number']}/comments", paginate=True)
@@ -625,7 +662,8 @@ def main() -> int:
         verdict, reasons = judge(facts)
         sha = pr["head"]["sha"]
         comments = facts["pr_comments"]
-        print(f"PR #{pr['number']}（Issue #{number}）: {verdict} {reasons}")
+        shown = pending_facts(facts) if verdict == "wait" else reasons
+        print(f"PR #{pr['number']}（Issue #{number}）: {verdict} {shown}")
         if verdict == "wait" or already_commented(comments, sha, verdict, reasons, mode):
             continue
         if mode == "on" and verdict == "ok":
