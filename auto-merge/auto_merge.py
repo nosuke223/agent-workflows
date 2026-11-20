@@ -7,6 +7,7 @@
     GH_TOKEN       GitHub Actions のトークン
     REPO           所有者/リポジトリ
     AGENT_ACCOUNT  エージェントの GitHub アカウント
+    OWNER_ACCOUNT  所有者の GitHub アカウント（空なら、リポジトリの持ち主。組織のリポジトリで使う）
     AUTO_MERGE     off: 何もしない / dry-run（未設定も同じ）: 判定の結果をコメントするだけ /
                    on: 条件を満たしたら承認してマージする
 
@@ -440,9 +441,13 @@ query($owner: String!, $name: String!, $number: Int!) {
 def collect(
     repo: str, owner: str, pr: dict, scope_all: bool = False
 ) -> tuple[int | None, dict | None]:
-    """PR の Issue 番号と、判定に使う事実。対象外なら (None, None)。"""
-    name = repo.split("/", 1)[1]
-    data = gh_graphql(CLOSING_QUERY, owner=owner, name=name, number=pr["number"])
+    """PR の Issue 番号と、判定に使う事実。対象外なら (None, None)。
+
+    owner は所有者（承認する人）のログイン名で、承認の判定にだけ使う。組織のリポジトリでは
+    リポジトリの持ち主と違うので、GitHub への問い合わせ先は repo から決める。
+    """
+    holder, name = repo.split("/", 1)
+    data = gh_graphql(CLOSING_QUERY, owner=holder, name=name, number=pr["number"])
     refs = data["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]
     number = issue_number_of(pr["head"]["ref"], closing_numbers(refs, repo))
     if number is None:
@@ -573,6 +578,16 @@ def close_issue(repo: str, issue: int) -> None:
             gh("issue", "edit", str(issue), "-R", repo, "--remove-label", label["name"])
 
 
+def owner_account(repo: str, configured: str | None) -> str:
+    """所有者（Issue を書き、承認する人）の GitHub のログイン名。
+
+    ふつうはリポジトリの持ち主（`所有者/リポジトリ` の前半）。組織のリポジトリでは持ち主が
+    組織の名前になり、人のログイン名と違うので、呼び出し側が owner-account
+    （変数 OWNER_ACCOUNT）で決める。
+    """
+    return (configured or "").strip() or repo.split("/", 1)[0]
+
+
 def main() -> int:
     mode = os.environ.get("AUTO_MERGE") or "dry-run"
     if mode == "off":
@@ -588,7 +603,7 @@ def main() -> int:
         print("Dependabot がきっかけの実行なので、何もしません（トークンが読むだけのため）")
         return 0
     repo = os.environ["REPO"]
-    owner = repo.split("/", 1)[0]
+    owner = owner_account(repo, os.environ.get("OWNER_ACCOUNT"))
     agent = os.environ["AGENT_ACCOUNT"]
     default_branch = gh_api(f"repos/{repo}")["default_branch"]
     for pr in gh_api(f"repos/{repo}/pulls?state=open&per_page=100"):

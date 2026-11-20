@@ -877,3 +877,73 @@ class PlanAutoApprovalTest(unittest.TestCase):
         self.assertFalse(
             self.run_parent(["plan", "plan:auto"], url="https://api.github.com/repos/o/r2/issues/3")
         )
+
+
+class OwnerAccountTest(unittest.TestCase):
+    def test_defaults_to_the_account_that_holds_the_repo(self):
+        self.assertEqual(m.owner_account("o/r", None), "o")
+        self.assertEqual(m.owner_account("o/r", ""), "o")
+        self.assertEqual(m.owner_account("o/r", "  "), "o")
+
+    def test_configured_owner_wins_in_an_organization_repo(self):
+        self.assertEqual(m.owner_account("acme/app", " alice "), "alice")
+
+    def test_organization_name_is_not_trusted_as_the_owner(self):
+        # 組織のリポジトリでは、組織の名前と同じログイン名の人が付けた agent:ready は承認にならない
+        owner = m.owner_account("acme/app", "alice")
+        issue = {"user": {"login": "agent-bot"}, "labels": []}
+        by_org = [
+            {"event": "labeled", "label": {"name": "agent:ready"}, "actor": {"login": "acme"}}
+        ]
+        by_owner = [
+            {"event": "labeled", "label": {"name": "agent:ready"}, "actor": {"login": "alice"}}
+        ]
+        self.assertIsNotNone(m.owner_approval(issue, by_org, owner, True))
+        self.assertIsNone(m.owner_approval(issue, by_owner, owner, True))
+
+    def test_collect_asks_the_repo_not_the_owner_account(self):
+        # 組織のリポジトリ（acme/app）で所有者が alice のとき、問い合わせ先は acme/app のまま。
+        # alice は承認の判定にだけ使う
+        refs = {
+            "repository": {
+                "pullRequest": {
+                    "closingIssuesReferences": {
+                        "nodes": [{"number": 3, "repository": {"nameWithOwner": "acme/app"}}]
+                    }
+                }
+            }
+        }
+        ready = {"event": "labeled", "label": {"name": "agent:ready"}}
+        events = [dict(ready, actor={"login": "alice"})]
+        asked = []
+
+        def api(path, paginate=False):
+            asked.append(path)
+            if path == "repos/acme/app/issues/3":
+                return {"number": 3, "user": {"login": "agent"}, "labels": []}
+            if path == "repos/acme/app/issues/3/events":
+                return list(events)
+            if path == "repos/acme/app/commits/" + HEAD + "/check-runs?per_page=100":
+                return {"check_runs": []}
+            if path == "repos/acme/app/pulls/7":
+                return {"mergeable": True}
+            if path.startswith("repos/acme/app/"):
+                return []
+            raise AssertionError(path)
+
+        pr = {"number": 7, "head": {"ref": "issue-3-x", "sha": HEAD}}
+        with (
+            mock.patch.object(m, "gh_api", side_effect=api),
+            mock.patch.object(m, "gh_graphql", return_value=refs) as graphql,
+        ):
+            number, facts = m.collect("acme/app", "alice", pr, True)
+            self.assertEqual(graphql.call_args.kwargs["owner"], "acme")
+            self.assertEqual(graphql.call_args.kwargs["name"], "app")
+            self.assertEqual(number, 3)
+            self.assertEqual(facts["owner"], "alice")
+            self.assertIsNone(facts["unapproved"])
+            # 組織の名前と同じログイン名の人が付けた agent:ready は、承認にならない
+            events[:] = [dict(ready, actor={"login": "acme"})]
+            _, facts = m.collect("acme/app", "alice", pr, True)
+            self.assertIsNotNone(facts["unapproved"])
+        self.assertTrue(all(path.startswith("repos/acme/app/") for path in asked), asked)
