@@ -659,6 +659,57 @@ class AfterMergeTest(unittest.TestCase):
             self.retry(**kwargs).assert_not_called()
 
 
+class PrDetailTest(unittest.TestCase):
+    def test_rereads_while_mergeable_is_being_computed(self):
+        answers = [
+            {"state": "open", "mergeable": None},
+            {"state": "open", "mergeable": None},
+            {"state": "open", "mergeable": True},
+        ]
+        with (
+            mock.patch.object(m, "gh_api", side_effect=answers) as api,
+            mock.patch.object(m.time, "sleep") as sleep,
+        ):
+            detail = m.pr_detail("acme/app", 7)
+        self.assertIs(detail["mergeable"], True)
+        self.assertEqual(api.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_gives_up_after_the_limit(self):
+        with (
+            mock.patch.object(
+                m, "gh_api", return_value={"state": "open", "mergeable": None}
+            ) as api,
+            mock.patch.object(m.time, "sleep"),
+        ):
+            detail = m.pr_detail("acme/app", 7)
+        self.assertIsNone(detail["mergeable"])
+        self.assertEqual(api.call_count, m.MERGEABLE_RETRIES + 1)
+
+    def test_does_not_wait_when_known_or_closed(self):
+        for answer in [
+            {"state": "open", "mergeable": False},
+            {"state": "closed", "mergeable": None},
+        ]:
+            with (
+                mock.patch.object(m, "gh_api", return_value=answer) as api,
+                mock.patch.object(m.time, "sleep") as sleep,
+            ):
+                m.pr_detail("acme/app", 7)
+            self.assertEqual(api.call_count, 1)
+            sleep.assert_not_called()
+
+
+class PendingFactsTest(unittest.TestCase):
+    def test_names_what_is_not_ready(self):
+        facts = {"codex": True, "test": True, "mergeable": None}
+        self.assertEqual(m.pending_facts(facts), ["衝突の判定がまだ"])
+        facts = {"codex": None, "test": None, "mergeable": True}
+        self.assertEqual(m.pending_facts(facts), ["Codex のレビューがまだ", "テストがまだ"])
+        facts = {"codex": False, "test": True, "mergeable": True}
+        self.assertEqual(m.pending_facts(facts), ["Codex の指摘がある"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
